@@ -129,7 +129,7 @@ config_osc:
 
 config_tmr0:
     banksel OPTION_REG
-    bcf T0CS ;timer como WDT
+    bcf T0CS ;timer como temporizador
     bcf PSA ; asignación de prescaler al tmr0
     
     bsf PS2
