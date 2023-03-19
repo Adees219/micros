@@ -7,7 +7,7 @@
 ; Hardware: 
 ; 
 ; Creado: 27 febrero, 2023
-; Última modificación: 
+; Ãšltima modificaciÃ³n: 
 
 processor 16F887
 #include <xc.inc>
@@ -29,27 +29,42 @@ processor 16F887
   CONFIG  WRT = OFF             ; Flash Program Memory Self Write Enable bits (Write protection off)
 
 ;---------------------------macros------------------- 
- reinicio_tmr0 macro
+ reinicio_tmr0 macro valueTmr0
     banksel PORTA
-    movlw 100
-    movf TMR0
+    movf valueTmr0, W
+    movwf TMR0
     bcf T0IF
 endm 
  
+    
+sel_prescaler macro valuePS
+    banksel OPTION_REG
+    movf valuePS, W
+    iorwf OPTION_REG, F
+endm 
+
 ;------------------------variables-------------------
       
 PSECT udata_shr ;variables que se protegen los bits de status 
+
+//variables para interrupcion
 W_TEMP: DS 1	    ;variables para el push-pop
 STATUS_TEMP: DS 1
 
+//variables para cambio de frecuencia
+ctrlFR: DS 1
+frecuencia: DS 1
+preescalador: DS 1  
+    
+//variables de interfaz
 var: DS 1	    ;valor para los displays
 flags: DS 1	    ;selector del multiplexado	
 display_var: DS 4   ;valor mostrado en los displays    
 
-vueltas: DS 1 //temporalmente
-pendiente: DS 1
-nivel_pendiente: DS 1
     
+//variables mapeo ondas
+pendiente: DS 1
+nivel_pendiente: DS 1   
 mode: DS 1    
 
     
@@ -95,11 +110,20 @@ pop:
 org 100h
 setup:
     call config_io
-    call config_tmr0
     call config_reloj
     call config_int_enable
     call config_iocrb
     
+    //condiciones iniciales para tmr0
+    movlw 0
+    call tabla_tmr0 
+    movwf frecuencia
+    call seteo_prescaler
+    movwf preescalador
+    
+    call config_tmr0
+     
+    //condiciones iniciales para onda triangular
     movlw 254
     movwf nivel_pendiente
     
@@ -107,12 +131,93 @@ banksel PORTA
  
 ;--------------------------loop----------------------
 loop:
-    movlw 10
-    movwf PORTC //valor de prueba
+    call seteo_freq
+    call seteo_prescaler
+    movwf preescalador
+    
+    btfss PORTB, 0
+    call limpiar
+    
+    btfss PORTB, 1
+    call incr_freq
+   
+    btfss PORTB, 2
+    call dec_freq
+    
+
+      
     goto loop
 ;-----------------------subrutinas loop--------------
 
-;------------------subrutina interrupción------------
+limpiar:
+clrf PORTA
+    return
+    
+incr_freq:
+btfss PORTB, 1 ; (anti-rebote)comprueba si el boton que llamo a la rutina dejo de ser presionado
+goto $-1	    ;vuelve a la lÃ­nea anterior
+incf ctrlFR	; incrementa el valor del puerto A 
+return	;sale de la subrutina y regresa al loop
+
+    
+dec_freq:    
+btfss PORTB, 2 ; (anti-rebote)comprueba si el boton que llamo a la rutina dejo de ser presionado
+goto $-1	    ;vuelve a la lÃ­nea anterior
+decf ctrlFR	; incrementa el valor del puerto A 
+return	;sale de la subrutina y regresa al loop
+
+    
+seteo_freq:
+    movf ctrlFR, W
+    andlw 0x32
+    call tabla_tmr0 //mandar valor tmr0
+    movwf frecuencia  
+return
+
+    
+seteo_prescaler:
+//comparador prescaler 128  (caso: 0-2)
+movf ctrlFR, W 
+sublw 3
+btfsc STATUS, 0 //uno: W<3 dos: W>3
+retlw 0b110//caso verdadero
+
+//comparador presacaler 64  (caso: 3-5)
+movf ctrlFR, W 
+sublw 6
+btfsc STATUS, 0 //uno: W<5 dos: W>5
+retlw 0b101  //caso verdadero
+   
+//comparador presacaler 32  (caso: 6-8)
+movf ctrlFR, W 
+sublw 9
+btfsc STATUS, 0 //uno: W<3 dos: W>3
+retlw 0b100  //caso verdadero 
+    
+//comparador presacaler 16  (caso:9-12)
+movf ctrlFR, W 
+sublw 13
+btfsc STATUS, 0 //uno: W<3 dos: W>3
+retlw 0b011  //caso verdadero  
+
+//comparador presacaler 8  (caso:13-15)
+movf ctrlFR, W 
+sublw 16
+btfsc STATUS, 0 //uno: W<3 dos: W>3
+retlw 0b010  //caso verdadero 
+   
+//comparador presacaler 4  (caso:16-28)
+movf ctrlFR, W 
+sublw 29
+btfsc STATUS, 0 //uno: W<3 dos: W>3
+retlw 0b001  //caso verdadero 
+   
+//comparador presacaler 2  (caso:29-49)
+retlw 0b000  //caso verdadero  
+
+
+    
+;------------------subrutina interrupciÃ³n------------
 
 change_mode:
     btfsc PORTB, 0
@@ -120,32 +225,26 @@ change_mode:
     movlw 0x01
     xorwf mode, F 
     bcf RBIF
-    clrf PORTA
+ // clrf PORTA
     return
 
 generador:
     call signal
     call selector_display
-    reinicio_tmr0
+    reinicio_tmr0 frecuencia
+    sel_prescaler preescalador 
     return
 
-    
-    
+  
 signal:
     ;0:cuadrada	    ;1:triangular
-    btfss mode,0 
+    btfsc mode,0 
     call rectangular
-    btfsc mode,0
+    btfss mode,0
     call triangular
     return
 
 rectangular: 
-  /* incf vueltas ;lleva el conteo de las vueltas que ha realizado
-   movf vueltas, W ;pasa el conteo de vueltas a W
-   sublw 10 ;resta a la literal el valor de W, como tmr0 va a 0.01 s y 100 vueltas (100*0.01 = 1s)
-   btfss STATUS, 2 ;comprueba la bandera zero
-   goto $+3 ;zero = 0: sale de la subrutina ; zero = 1: salta esta instruccion
-   clrf vueltas ;reinicia el conteo de vueltas*/
    comf PORTA
    return
     
@@ -158,12 +257,14 @@ triangular:
 
  t_inc:  
     incf PORTA
-    decf nivel_pendiente
+    //decf nivel_pendiente
+    movf PORTA, W
+    sublw 255
     btfss STATUS, 2
-    goto $+5
+    goto $+3
     
-    movlw 254
-    movwf nivel_pendiente //reinicia contador
+  /*  movlw 254
+    movwf nivel_pendiente //reinicia contador*/
     
     movlw 0x01
     xorwf pendiente, F  //cambia bandera
@@ -172,18 +273,17 @@ triangular:
    
 t_dec:
     decf PORTA
-    decf nivel_pendiente
     btfss STATUS, 2
-    goto $+5
+    goto $+3
     
-    movlw 254
-    movwf nivel_pendiente //reinicia contador
+  /*  movlw 254
+    movwf nivel_pendiente //reinicia contador*/
     
     movlw 0x01
     xorwf pendiente, F  //cambia bandera
 
    return
-   return
+
    
 selector_display:
     clrf PORTD		;apagar los displays
@@ -261,13 +361,14 @@ display_3:
     bsf TRISB, 2 //boton + frecuencia
     bsf TRISB, 3 //boton - frecuencia
     
-    
+   //limpieza 
     banksel PORTA
     clrf PORTA
     clrf PORTB
     clrf PORTC
     clrf PORTD
-    
+    clrf frecuencia
+    clrf preescalador 
     return
     
     
@@ -277,19 +378,16 @@ display_3:
     bcf T0CS	;mode: temporizador
     bcf PSA	;prescaler para temporizador
     
-    bcf PS2
-    bcf PS1
-    bsf PS0	;prescaler: 4
+   sel_prescaler preescalador
+   reinicio_tmr0 frecuencia 
    
-    banksel PORTA
-    reinicio_tmr0
     return
     
 config_reloj:
     banksel OSCCON
-    bcf IRCF2
+    bsf IRCF2
     bsf IRCF1
-    bsf IRCF0 ;4MHz
+    bcf IRCF0 ;4MHz
     bsf SCS
     return
     
@@ -334,29 +432,76 @@ config_int_enable:
     retlw 01111001B ;E
     retlw 01110001B ;F
     
-/* tabla_triangular: 
+ tabla_tmr0: 
     CLRF PCLATH
     BSF PCLATH, 0
-    ANDLW 0X0F
+    ANDLW 0X32
     ADDWF PCL ;PCL + PCLATH (W con PCL) PCL adquiere ese nuevo valor y salta a esa linea
-    ;valores que regresa
-    retlw 00000001B ;0
-    retlw 00000011B ;1
-    retlw 00000111B ;2
-    retlw 00001111B ;3
-    retlw 00011111B ;4
-    retlw 00111111B ;5
-    retlw 01111111B ;6
-    retlw 11111111B ;7
-    retlw 01111111B ;8
-    retlw 00111111B ;9
-    retlw 00011111B ;A
-    retlw 00001111B ;B
-    retlw 00000111B ;C
-    retlw 00000011B ;D
-    retlw 00000001B ;F
-    */
     
-   
+    ;valores que regresa:
+    
+    ;prescaler 1:128
+    retlw 178 ;100
+    retlw 217 ;200
+    retlw 230 ;300
+    
+    ;prescaler 1:64
+    retlw 217 ;400
+    retlw 225 ;500
+    retlw 230 ;600
+    
+    ;prescaler 1:32
+    retlw 212 ;700
+    retlw 217 ;800
+    retlw 221 ;900
+    
+    ;prescaler 1:16
+    retlw 194 ;1000
+    retlw 199 ;1100
+    retlw 204 ;1200
+    retlw 208 ;1300
+    
+    ;prescaler 1:8
+    retlw 167 ;1400
+    retlw 173 ;1500
+    retlw 178 ;1600
+    
+    ;prescaler 1:4
+    retlw 109 ;1700
+    retlw 117 ;1800
+    retlw 125 ;1900
+    retlw 131 ;2000
+    retlw 137 ;2100
+    retlw 142 ;2200
+    retlw 147 ;2300
+    retlw 152 ;2400
+    retlw 156 ;2500
+    retlw 160 ;2600
+    retlw 163 ;2700
+    retlw 167 ;2800
+    retlw 170 ;2900
+    
+    ;prescaler 1:2
+    retlw 89 ;3000
+    retlw 95 ;3100
+    retlw 100 ;3200
+    retlw 104 ;3300
+    retlw 109 ;3400
+    retlw 113 ;3500
+    retlw 117 ;3600
+    retlw 121 ;3700
+    retlw 124 ;3800
+    retlw 128 ;3900
+    retlw 131 ;4000
+    retlw 134 ;4100
+    retlw 137 ;4200
+    retlw 140 ;4300
+    retlw 142 ;4400
+    retlw 145 ;4500
+    retlw 147 ;4600
+    retlw 150 ;4700
+    retlw 152 ;4800
+    retlw 154 ;4900
+    retlw 156 ;5000
 
 END
